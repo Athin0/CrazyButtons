@@ -1,20 +1,11 @@
-package main
+package handlers
 
 import (
-	"buttons/secret"
-	"fmt"
+	utils "buttons/src/helpers"
 	tgbotapi "github.com/skinass/telegram-bot-api/v5"
 	"log"
-	"net/http"
-	"os"
 )
 
-var userLastCommand = make(map[int64]string)
-
-var (
-	BotToken   = secret.BotToken
-	WebhookURL = secret.WebhookURL
-)
 var keyBoard = tgbotapi.NewReplyKeyboard(
 	tgbotapi.NewKeyboardButtonRow(
 		tgbotapi.NewKeyboardButton("/button1"),
@@ -31,79 +22,7 @@ var keyBoardLR = []tgbotapi.InlineKeyboardButton{
 	tgbotapi.NewInlineKeyboardButtonData("right", "right"),
 }
 
-func main() {
-	err := startTaskBot()
-	if err != nil {
-		panic(err)
-	}
-}
-func startTaskBot() error {
-	bot, err := tgbotapi.NewBotAPI(BotToken)
-	if err != nil {
-		log.Fatalf("NewBotAPI failed: %s", err)
-		return err
-	}
-
-	bot.Debug = true
-	fmt.Printf("Authorized on account %s\n", bot.Self.UserName)
-
-	wh, err := tgbotapi.NewWebhook(WebhookURL)
-	if err != nil {
-		log.Fatalf("NewWebhook failed: %s", err)
-		return err
-	}
-
-	_, err = bot.Request(wh)
-	if err != nil {
-		log.Fatalf("SetWebhook failed: %s", err)
-		return err
-	}
-
-	updates := bot.ListenForWebhook("/")
-
-	http.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
-		_, err := w.Write([]byte("all is working"))
-		if err != nil {
-			log.Println("find state err: ", err.Error())
-		}
-	})
-
-	port := os.Getenv("SERVER_PORT")
-	if port == "" {
-		port = "80"
-	}
-	go func() {
-		log.Fatalln("http err:", http.ListenAndServe(":"+port, nil))
-	}()
-	fmt.Println("start listen :" + port)
-
-	for update := range updates {
-		if update.CallbackQuery != nil {
-			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, update.CallbackQuery.Data)
-			if _, err := bot.Request(callback); err != nil {
-				panic(err)
-			}
-			if userLastCommand[update.CallbackQuery.From.ID] == "" {
-				continue
-			}
-			data := update.CallbackQuery.Data
-			from := update.CallbackQuery.From.ID
-			handleCallbackQuery(bot, from, data)
-			userLastCommand[update.CallbackQuery.From.ID] = ""
-			continue
-		}
-		if update.Message == nil {
-			continue
-		}
-
-		go handleUpdate(bot, update)
-
-	}
-
-	return nil
-}
-
-func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+func HandleUpdateMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, userLastCommand *utils.LastCommand) {
 	defer func() {
 		if p := recover(); p != nil {
 			log.Printf("panic: %s", p)
@@ -117,6 +36,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		if _, err := bot.Send(msg); err != nil {
 			log.Panic(err)
 		}
+		return
 	}
 	keyboard := tgbotapi.InlineKeyboardMarkup{}
 	keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, keyBoardLR)
@@ -153,12 +73,12 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 			log.Panic(err)
 		}
 	}
-	userLastCommand[update.Message.Chat.ID] = command
+	userLastCommand.Set(update.Message.Chat.ID, command)
 }
 
-func handleCallbackQuery(bot *tgbotapi.BotAPI, from int64, button string) {
+func HandleCallbackQuery(bot *tgbotapi.BotAPI, from int64, button string, userLastCommand *utils.LastCommand) {
 	msg := ""
-	last := userLastCommand[from]
+	last := userLastCommand.Get(from)
 	switch last {
 	case "button1":
 		if button == "left" {
@@ -185,6 +105,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, from int64, button string) {
 			msg = "Штирлиц стрелял вслепую. Слепая бегала зигзагами и кричала"
 		}
 	default:
+		log.Println("Strange command:", last)
 		return
 	}
 	msg2 := tgbotapi.NewMessage(from, msg)
@@ -192,4 +113,5 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, from int64, button string) {
 	if _, err := bot.Send(msg2); err != nil {
 		log.Panic(err)
 	}
+	userLastCommand.Set(from, "")
 }
